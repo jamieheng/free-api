@@ -9,5 +9,7 @@ router.post("/positions", authenticate, companyController.addNewPosition);
 router.post("/set-working-hours", companyController.setWorkingHours);
 router.get("/working-hours", companyController.getWorkingHours);
 router.put("/update-company", companyController.updateCompany);
+router.get("/get-department", companyController.getDepartments);
+router.get("/get-companies", companyController.getCompanies);
 
 module.exports = router;
