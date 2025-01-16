@@ -1,95 +1,162 @@
-// auth.controller.js
-
-const User = require("./auth.model");
 const jwt = require("jsonwebtoken");
-const twilio = require("twilio");
+const bcrypt = require("bcryptjs"); // For password hashing
+const User = require("../models/user.model"); // Assuming the path is correct
+const Job = require("../models/job.model");
+const Company = require("../models/company.model");
+const Department = require("../models/department.model");
+const Position = require("../models/position.model");
+const companyController = require("./company.controller");
 
-// Twilio configuration (replace with your credentials)
-const accountSid = "your_account_sid";
-const authToken = "your_auth_token";
-const client = twilio(accountSid, authToken);
-
-// Utility to generate random OTP
-const generateOtp = () =>
-  Math.floor(100000 + Math.random() * 900000).toString();
-
-// Send OTP
-const sendOtp = async (req, res) => {
-  const { phone } = req.body;
-  const otp = generateOtp();
-  const otpExpiresAt = new Date(Date.now() + 5 * 60000); // OTP expires in 5 minutes
-
+// Add a new user
+const register = async (req, res) => {
   try {
-    let user = await User.findOne({ phone });
+    const {
+      userName,
+      email,
+      password,
+      companyName,
+      companyAddress,
+      industry,
+      contactNumber,
+      website,
+      establishedYear,
+      workHours,
+    } = req.body;
 
-    if (!user) {
-      user = new User({ phone, otp, otpExpiresAt });
-    } else {
-      user.otp = otp;
-      user.otpExpiresAt = otpExpiresAt;
+    // Validate input (simple example)
+    if (!email || !password || !userName || !companyName) {
+      return res.status(400).json({ message: "All fields are required." });
     }
 
-    await user.save();
+    // Validate password strength (example check)
+    const passwordRegex = /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z]).{8,}$/;
+    if (!passwordRegex.test(password)) {
+      return res.status(400).json({
+        message:
+          "Password must be at least 8 characters long and include a mix of uppercase, lowercase, and numbers.",
+      });
+    }
 
-    // Send OTP via Twilio
-    await client.messages.create({
-      body: `Your OTP code is ${otp}`,
-      from: "your_twilio_phone_number", // Replace with Twilio number
-      to: phone,
+    // Check if the email already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(409).json({ message: "Email already exists" });
+    }
+
+    // Hash the user's password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create the new user
+    const newUser = new User({
+      name: userName,
+      email,
+      password: hashedPassword,
+      role: "admin", // Set the role as "admin" for the first user
     });
 
-    res.status(200).send({ message: "OTP sent successfully" });
-  } catch (error) {
-    res.status(500).send({ error: "Error sending OTP" });
-  }
-};
+    // Save the user to the database
+    const savedUser = await newUser.save();
 
-// Verify OTP
-const verifyOtp = async (req, res) => {
-  const { phone, otp } = req.body;
-
-  try {
-    const user = await User.findOne({ phone });
-
-    if (!user || !user.isOtpValid(otp)) {
-      return res.status(400).send({ error: "Invalid OTP" });
+    // Geofence validation (check if valid latitude, longitude, and radius)
+    const { centerLatitude, centerLongitude, radius } = companyAddress;
+    if (
+      typeof centerLatitude !== "number" ||
+      typeof centerLongitude !== "number" ||
+      typeof radius !== "number" ||
+      centerLatitude < -90 ||
+      centerLatitude > 90 ||
+      centerLongitude < -180 ||
+      centerLongitude > 180 ||
+      radius <= 0
+    ) {
+      return res.status(400).json({ message: "Invalid geofence data." });
     }
 
-    user.isVerified = true;
-    user.otp = undefined; // Clear OTP after verification
-    user.otpExpiresAt = undefined;
-    await user.save();
-
-    const token = jwt.sign({ _id: user._id.toString() }, "secretKey", {
-      expiresIn: "7d", // Token expires in 7 days
+    // Create the company and link it to the user
+    const newCompany = new Company({
+      name: companyName,
+      geofence: companyAddress,
+      industry,
+      contactNumber,
+      website,
+      establishedYear,
+      workingHours: workHours,
+      owner: savedUser._id, // Link company to user
     });
 
-    res.send({ message: "OTP verified", token });
+    // Save the company to the database
+    const savedCompany = await newCompany.save();
+
+    // Update the user to reference the created company
+    savedUser.company = savedCompany._id;
+    await savedUser.save();
+
+    res.status(201).json({
+      message: "User and company created successfully",
+      user: {
+        id: savedUser._id,
+        name: savedUser.name,
+        email: savedUser.email,
+        role: savedUser.role,
+      },
+      company: {
+        id: savedCompany._id,
+        name: savedCompany.name,
+        address: savedCompany.geofence,
+        industry: savedCompany.industry,
+        contactNumber: savedCompany.contactNumber,
+        website: savedCompany.website,
+        establishedYear: savedCompany.establishedYear,
+        workingHours: savedCompany.workingHours,
+      },
+    });
   } catch (error) {
-    res.status(500).send({ error: "Verification failed" });
+    console.error("Error during registration:", error);
+    res.status(500).json({ message: "Internal server error" });
   }
 };
 
-// Middleware to authenticate user using JWT token
-const auth = async (req, res, next) => {
+// Log in a user
+const logIn = async (req, res) => {
   try {
-    const token = req.header("Authorization").replace("Bearer ", "");
-    const decoded = jwt.verify(token, "secretKey");
-    const user = await User.findOne({ _id: decoded._id });
+    const { email, password } = req.body;
 
+    // Find the user by email
+    const user = await User.findOne({ email });
     if (!user) {
-      throw new Error();
+      return res.status(401).json({ message: "Invalid email or password" });
     }
 
-    req.user = user;
-    next();
+    // Compare the provided password with the stored hashed password
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ message: "Invalid email or password" });
+    }
+
+    // Generate a JWT token
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+      expiresIn: "1h", // Token expiration time
+    });
+
+    res.status(200).json({
+      message: "Login successful",
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        company: user.company,
+      },
+    });
   } catch (error) {
-    res.status(401).send({ error: "Please authenticate" });
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
   }
 };
 
-module.exports = {
-  sendOtp,
-  verifyOtp,
-  auth,
+const logOut = function (req, res) {
+  res.status(200).json({ message: "Logout successful" });
 };
+
+module.exports = { register, logIn, logOut };
