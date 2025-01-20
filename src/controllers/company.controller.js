@@ -259,50 +259,6 @@ const updateCompany = async (req, res) => {
 	}
 };
 
-const getDepartments = async (req, res) => {
-	try {
-		const token = req.headers.authorization?.split(" ")[1];
-		if (!token) {
-			return res
-				.status(403)
-				.json({ message: "Access denied. No token provided." });
-		}
-
-		const decodedToken = jwt.verify(token, process.env.JWT_SECRET);
-		const adminUser = await User.findById(decodedToken.id);
-
-		// Verify admin privileges
-		if (!adminUser || adminUser.role !== "admin") {
-			return res.status(403).json({ message: "Access denied. Admins only." });
-		}
-
-		// Verify the company exists
-		const company = await Company.findById(adminUser.company);
-		if (!company) {
-			return res
-				.status(404)
-				.json({ message: "Company not found for the admin user." });
-		}
-
-		// Query all departments associated with the company
-		const departments = await Department.find({ company: company._id });
-
-		if (departments.length === 0) {
-			return res
-				.status(200)
-				.json({ message: "No departments found for this company." });
-		}
-
-		res.status(200).json({
-			message: "Departments retrieved successfully.",
-			departments,
-		});
-	} catch (error) {
-		console.error("Error fetching departments:", error);
-		res.status(500).json({ message: "Internal server error." });
-	}
-};
-
 const getCompanies = async (req, res) => {
 	try {
 		const token = req.headers.authorization?.split(" ")[1];
@@ -343,9 +299,143 @@ const getCompanies = async (req, res) => {
 	}
 };
 
+// const getDepartments = async (req, res) => {
+// 	try {
+// 		const token = req.headers.authorization?.split(" ")[1];
+// 		if (!token) {
+// 			return res
+// 				.status(403)
+// 				.json({ message: "Access denied. No token provided." });
+// 		}
+
+// 		const decodedToken = jwt.verify(token, process.env.JWT_SECRET);
+// 		const adminUser = await User.findById(decodedToken.id);
+
+// 		// Verify admin privileges
+// 		if (!adminUser || adminUser.role !== "admin") {
+// 			return res.status(403).json({ message: "Access denied. Admins only." });
+// 		}
+
+// 		// Verify the company exists
+// 		const company = await Company.findById(adminUser.company);
+// 		if (!company) {
+// 			return res
+// 				.status(404)
+// 				.json({ message: "Company not found for the admin user." });
+// 		}
+
+// 		// Query all departments associated with the company
+// 		const departments = await Department.find({ company: company._id });
+// 		const jobs = await Job.find({ department: departments._id });
+
+// 		if (departments.length === 0) {
+// 			return res
+// 				.status(200)
+// 				.json({ message: "No departments found for this company." });
+// 		}
+
+// 		res.status(200).json({
+// 			message: "Departments retrieved successfully.",
+// 			departments,
+// 		});
+// 	} catch (error) {
+// 		console.error("Error fetching departments:", error);
+// 		res.status(500).json({ message: "Internal server error." });
+// 	}
+// };
+
+const getJobs = async (req, res) => {
+	try {
+		const { departmentId } = req.params;
+
+		// Check if the department exists
+		const department = await Department.findById(departmentId);
+		if (!department) {
+			return res.status(404).json({ message: "Department not found." });
+		}
+
+		// Fetch jobs for this department
+		const jobs = await Job.find({ department: departmentId });
+
+		// Handle the case if no jobs are found
+		if (jobs.length === 0) {
+			return res
+				.status(200)
+				.json({ message: "No jobs found for this department." });
+		}
+
+		// Return the list of jobs
+		res.status(200).json({
+			message: "Jobs retrieved successfully.",
+			jobs,
+		});
+	} catch (error) {
+		console.error("Error fetching jobs:", error);
+		res.status(500).json({ message: "Internal server error." });
+	}
+};
+
+const getDepartments = async (req, res) => {
+	try {
+		const token = req.headers.authorization?.split(" ")[1];
+		if (!token) {
+			return res
+				.status(403)
+				.json({ message: "Access denied. No token provided." });
+		}
+
+		const decodedToken = jwt.verify(token, process.env.JWT_SECRET);
+		const adminUser = await User.findById(decodedToken.id);
+
+		// Verify admin privileges
+		if (!adminUser || adminUser.role !== "admin") {
+			return res.status(403).json({ message: "Access denied. Admins only." });
+		}
+
+		// Verify the company exists
+		const company = await Company.findById(adminUser.company);
+		if (!company) {
+			return res
+				.status(404)
+				.json({ message: "Company not found for the admin user." });
+		}
+
+		// Query all departments associated with the company
+		const departments = await Department.find({ company: company._id });
+
+		// If no departments are found
+		if (departments.length === 0) {
+			return res
+				.status(200)
+				.json({ message: "No departments found for this company." });
+		}
+
+		// Fetch jobs for each department
+		const departmentsWithJobs = await Promise.all(
+			departments.map(async (department) => {
+				const jobs = await Job.find({ department: department._id });
+				return {
+					department,
+					jobs, // Attach the jobs for this department
+				};
+			})
+		);
+
+		res.status(200).json({
+			message: "Departments and their jobs retrieved successfully.",
+			departments: departmentsWithJobs,
+			totalDepartments: departmentsWithJobs.length,
+		});
+	} catch (error) {
+		console.error("Error fetching departments and jobs:", error);
+		res.status(500).json({ message: "Internal server error." });
+	}
+};
+
 module.exports = {
 	addDepartment,
 	addJob,
+	getJobs,
 	addNewPosition,
 	setWorkingHours,
 	getWorkingHours,
