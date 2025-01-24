@@ -57,6 +57,10 @@ app.use("/api/overtimes", overtimeRoutes);
 const holidayRoutes = require("./routes/holiday.route");
 app.use("/api/holidays", holidayRoutes);
 
+// Notification routes
+const notificationRoutes = require("./routes/notification.route");
+app.use("/api/notifications", notificationRoutes);
+
 // Socket.IO Middleware for Authentication
 io.use(async (socket, next) => {
 	const token = socket.handshake.auth.token;

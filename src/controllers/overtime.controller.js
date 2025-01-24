@@ -1,6 +1,7 @@
 const Overtime = require("../models/overtime.model");
 const User = require("../models/user.model");
 const jwt = require("jsonwebtoken");
+const Notification = require("../models/notification.model");
 
 // Employee Request Overtime Functionality
 const requestOvertime = async (req, res) => {
@@ -35,7 +36,50 @@ const requestOvertime = async (req, res) => {
 			status: "pending",
 		});
 
-		await newOvertimeRequest.save();
+		const savedOvertimeRequest = await newOvertimeRequest.save();
+
+		// Notify admins
+		const admins = await User.find({ role: "admin" });
+
+		// Create notifications for admins
+		const adminNotifications = admins.map((admin) => ({
+			user: admin._id, // Notification for each admin
+			title: "New Overtime Request",
+			message: `${user.name} has requested overtime for [ ${
+				newOvertimeRequest.hours
+			}hours ] from ${new Date(newOvertimeRequest.date).toLocaleDateString(
+				"en-GB"
+			)} for reason: ${newOvertimeRequest.reason} : [ ${
+				newOvertimeRequest.status
+			} ]`,
+
+			meta: { overtimeRequestId: savedOvertimeRequest._id },
+		}));
+
+		// Insert notifications into the database
+		await Notification.insertMany(adminNotifications);
+
+		// Fetch the updated list of notifications for each admin
+		const updatedNotifications = await Notification.find({
+			user: { $in: admins.map((admin) => admin._id) },
+		}).sort({ createdAt: -1 }); // Most recent notifications first
+
+		// Emit real-time notification to all connected admins
+		admins.forEach((admin) => {
+			req.io.emit("adminNotification", {
+				title: "New Overtime Request",
+				message: `${user.name} has requested overtime for [ ${
+					newOvertimeRequest.hours
+				}hours ] from ${new Date(newOvertimeRequest.date).toLocaleDateString(
+					"en-GB"
+				)} for reason: ${newOvertimeRequest.reason} : [ ${
+					newOvertimeRequest.status
+				} ]`,
+
+				user: admin._id, // Notification for each admin
+				notifications: updatedNotifications, // Include all notifications in real-time payload
+			});
+		});
 
 		// Emit a notification event
 
@@ -89,25 +133,70 @@ const acceptOvertime = async (req, res) => {
 				.status(400)
 				.json({ message: "Overtime request is not in pending status." });
 		}
+		const user = await User.findById(overtimeRequest.user);
+		if (!user) {
+			return res.status(404).json({ message: "User not found." });
+		}
 
-		overtimeRequest.status = "approved";
-		overtimeRequest.approvedBy = adminUserId;
-		overtimeRequest.approvedAt = new Date();
+		overtimeRequest.status = "rejected";
+		overtimeRequest.rejectedBy = adminUserId;
+		overtimeRequest.rejectedAt = new Date();
 
 		await overtimeRequest.save();
 
-		// Notify the user about the approval
-		const user = await User.findById(overtimeRequest.user);
-		if (user) {
-			req.io.emit("overtimeResponseNotification", {
-				userId: user._id, // Use a unique identifier to target the user
-				message: `${user.name}: overtime request for ${overtimeRequest.hours} hours on ${overtimeRequest.date} has been approved.`,
+		// save notification to database
+		const userNotification = new Notification({
+			user: user._id,
+			title: "Overtime Request Rejected",
+			message: `Your overtime request for [ ${
+				overtimeRequest.hours
+			} hours ] on ${new Date(overtimeRequest.date).toLocaleDateString(
+				"en-GB"
+			)} has been rejected by ${adminUser.name}.`,
+			type: "success",
+			meta: { overtimeRequestId: overtimeRequest._id },
+		});
+
+		await userNotification.save();
+
+		// Emit real-time notification to the user
+		req.io.to(user._id.toString()).emit("userNotification", {
+			message: `Your overtime request has been rejected by ${adminUser.name}.`,
+			overtimeRequest,
+		});
+
+		// Notify all admins about the approval
+		const admins = await User.find({ role: "admin" });
+
+		const adminNotifications = admins.map((admin) => ({
+			user: admin._id, // Notification for each admin
+			title: "Overtime Request Rejected",
+			message: `${user.name} overtime request for [ ${
+				overtimeRequest.hours
+			} hours ] on ${new Date(overtimeRequest.date).toLocaleDateString(
+				"en-GB"
+			)} has been rejected by ${adminUser.name}.`,
+			type: "info",
+			meta: { overtimeRequestId: overtimeRequest._id },
+		}));
+
+		await Notification.insertMany(adminNotifications);
+
+		// Emit real-time notification to all admins
+		admins.forEach((admin) => {
+			req.io.emit("userNotification", {
+				message: `Your overtime request for [ ${
+					overtimeRequest.hours
+				} hours ] on ${new Date(overtimeRequest.date).toLocaleDateString(
+					"en-GB"
+				)} has been rejected by ${adminUser.name}.`,
 				overtimeRequest,
+				user: admin._id,
 			});
-		}
+		});
 
 		res.status(200).json({
-			message: "Overtime request approved successfully.",
+			message: "Overtime request rejected successfully.",
 			overtimeRequest,
 		});
 	} catch (error) {
@@ -150,20 +239,68 @@ const rejectOvertime = async (req, res) => {
 		}
 
 		overtimeRequest.status = "rejected";
-		overtimeRequest.approvedBy = adminUserId;
-		overtimeRequest.approvedAt = new Date();
+		overtimeRequest.rejectedBy = adminUserId;
+		overtimeRequest.rejectedAt = new Date();
 
 		await overtimeRequest.save();
 
-		// Notify the user about the rejection
 		const user = await User.findById(overtimeRequest.user);
-		if (user) {
-			req.io.emit("overtimeResponseNotification", {
-				userId: user._id, // Use a unique identifier to target the user
-				message: `${user.name}: overtime request for ${overtimeRequest.hours} hours on ${overtimeRequest.date} has been rejected.`,
-				overtimeRequest,
-			});
+		if (!user) {
+			return res.status(404).json({ message: "User not found." });
 		}
+
+		await overtimeRequest.save();
+
+		// save notification to database
+		const userNotification = new Notification({
+			user: user._id,
+			title: "Overtime Request Rejected",
+			message: `Your overtime request for [ ${
+				overtimeRequest.hours
+			} hours ] on ${new Date(overtimeRequest.date).toLocaleDateString(
+				"en-GB"
+			)} has been rejected by ${adminUser.name}.`,
+			type: "success",
+			meta: { overtimeRequestId: overtimeRequest._id },
+		});
+
+		await userNotification.save();
+
+		// Emit real-time notification to the user
+		req.io.to(user._id.toString()).emit("userNotification", {
+			message: `Your overtime request has been rejected by ${adminUser.name}.`,
+			overtimeRequest,
+		});
+
+		// Notify all admins about the approval
+		const admins = await User.find({ role: "admin" });
+
+		const adminNotifications = admins.map((admin) => ({
+			user: admin._id, // Notification for each admin
+			title: "Overtime Request Rejected",
+			message: `${user.name} overtime request for [ ${
+				overtimeRequest.hours
+			} hours ] on ${new Date(overtimeRequest.date).toLocaleDateString(
+				"en-GB"
+			)} has been rejected by ${adminUser.name}.`,
+			type: "info",
+			meta: { overtimeRequestId: overtimeRequest._id },
+		}));
+
+		await Notification.insertMany(adminNotifications);
+
+		// Emit real-time notification to all admins
+		admins.forEach((admin) => {
+			req.io.emit("userNotification", {
+				message: `Your overtime request for [ ${
+					overtimeRequest.hours
+				} hours ] on ${new Date(overtimeRequest.date).toLocaleDateString(
+					"en-GB"
+				)} has been rejected by ${adminUser.name}.`,
+				overtimeRequest,
+				user: admin._id,
+			});
+		});
 
 		res.status(200).json({
 			message: "Overtime request rejected successfully.",
@@ -174,6 +311,7 @@ const rejectOvertime = async (req, res) => {
 		res.status(500).json({ message: "Internal server error." });
 	}
 };
+
 const getAllOvertimeRequests = async (req, res) => {
 	try {
 		const token = req.headers.authorization?.split(" ")[1];
@@ -204,8 +342,8 @@ const getAllOvertimeRequests = async (req, res) => {
 		} = req.query;
 		const filter = {};
 
-		// Apply status filter if provided
-		if (status && ["pending", "approved", "rejected"].includes(status)) {
+		// Apply `status` filter if provided
+		if (status && ["pending", "rejected", "rejected"].includes(status)) {
 			filter.status = status;
 		}
 

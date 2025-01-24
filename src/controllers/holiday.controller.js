@@ -1,6 +1,8 @@
 const jwt = require("jsonwebtoken");
 const Holiday = require("../models/holiday.model"); // Import the Holiday model
 const User = require("../models/user.model");
+const Notification = require("../models/notification.model");
+const Company = require("../models/company.model");
 
 // Add Holiday Controller
 const addHoliday = async (req, res) => {
@@ -13,36 +15,43 @@ const addHoliday = async (req, res) => {
         .json({ message: "Access denied. No token provided." });
     }
 
-    // Decode token and find the user
+    // Decode token and find the admin user
     const decodedToken = jwt.verify(token, process.env.JWT_SECRET);
-    const userId = decodedToken.id;
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: "User not found." });
+    const adminUserId = decodedToken.id;
+
+    const adminUser = await User.findById(adminUserId);
+    if (!adminUser) {
+      return res.status(404).json({ message: "Admin user not found." });
     }
 
-    // Check if the user is an admin
-    if (user.role !== "admin") {
+    console.log("Admin User: ", adminUser);
+
+    // Find the company where the admin is the owner
+    const company = await Company.findOne({ owner: adminUserId });
+    if (!company) {
       return res
-        .status(403)
-        .json({ message: "Access denied. Only admins can add holidays." });
+        .status(404)
+        .json({ message: "No company found for this admin." });
     }
 
     // Extract fields from the request body
-    const { name, date, companyId } = req.body;
+    const { name, date } = req.body;
 
     // Validate required fields
     if (!name || !date) {
       return res
         .status(400)
-        .json({ message: "Name, date, and companyId are required." });
+        .json({ message: "Name and date are required fields." });
     }
 
-    // Check if the holiday already exists for the given date and company
-    const existingHoliday = await Holiday.findOne({ date, companyId });
+    // Check if the holiday already exists for the given date in the company
+    const existingHoliday = await Holiday.findOne({
+      date,
+      companyId: company._id,
+    });
     if (existingHoliday) {
       return res.status(409).json({
-        message: "A holiday already exists for this date and company.",
+        message: "A holiday already exists for this date in your company.",
       });
     }
 
@@ -50,15 +59,62 @@ const addHoliday = async (req, res) => {
     const holiday = new Holiday({
       name,
       date,
-      companyId: user.company,
-      createdBy: userId, // Use the logged-in user's ID as the creator
+      companyId: company._id,
+      createdBy: adminUserId,
     });
 
     // Save the holiday to the database
     const savedHoliday = await holiday.save();
 
+    // Notify all users in the company
+    const users = await User.find({ company: company._id });
+
+    const userNotifications = users.map((user) => ({
+      user: user._id,
+      title: "New Holiday Added",
+      message: `A new holiday '${name}' has been added on ${new Date(
+        date
+      ).toLocaleDateString("en-GB")}.`,
+      type: "info",
+      meta: { holidayId: savedHoliday._id },
+    }));
+
+    await Notification.insertMany(userNotifications);
+
+    const admins = await User.find({ role: "admin" });
+    // Emit real-time notification to the user
+    users.forEach((user) => {
+      req.io.to(user._id.toString()).emit("userNotification", {
+        message: `A new holiday '${name}' has been added on ${new Date(
+          date
+        ).toLocaleDateString("en-GB")}.`,
+        holiday: savedHoliday,
+      });
+    });
+
+    // Emit real-time notification to all users in the company
+    users.forEach((user) => {
+      req.io.to(user._id.toString()).emit("userNotification", {
+        message: `A new holiday '${name}' has been added on ${new Date(
+          date
+        ).toLocaleDateString("en-GB")}.`,
+        holiday: savedHoliday,
+      });
+    });
+
+    // Emit real-time notification to all admins
+    admins.forEach((admin) => {
+      req.io.emit("userNotification", {
+        message: `A new holiday '${name}' has been added on ${new Date(
+          date
+        ).toLocaleDateString("en-GB")}.`,
+        holiday: savedHoliday,
+        user: admin._id,
+      });
+    });
+
     res.status(201).json({
-      message: "Holiday added successfully.",
+      message: "Holiday added successfully, and users notified.",
       data: savedHoliday,
     });
   } catch (error) {

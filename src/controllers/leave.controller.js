@@ -1,8 +1,10 @@
 const jwt = require("jsonwebtoken");
 const Leave = require("../models/leave.model");
 const User = require("../models/user.model");
+const Notification = require("../models/notification.model");
 
 // Employee Request Leave Functionality
+
 const requestLeave = async (req, res) => {
 	try {
 		// Verify token and extract user ID
@@ -40,7 +42,7 @@ const requestLeave = async (req, res) => {
 				.json({ message: `Insufficient ${leaveType} leave balance.` });
 		}
 
-		// Create a new leave request (no deduction yet)
+		// Create a new leave request
 		const newLeaveRequest = new Leave({
 			user: userId,
 			leaveType,
@@ -48,22 +50,61 @@ const requestLeave = async (req, res) => {
 			endDate,
 			reason,
 			duration,
-			status: "pending", // Initially, the leave request will be in "pending" status
+			status: "pending",
 		});
 
-		await newLeaveRequest.save();
+		const savedLeaveRequest = await newLeaveRequest.save();
 
-		if (user) {
-			req.io.emit("leaveRequestNotification", {
-				userId: user._id,
-				message: `${user.name}: requested leave for ${newLeaveRequest.hours} hours on ${newLeaveRequest.date}`,
-				leaveRequest: newLeaveRequest,
+		// Notify admins
+		const admins = await User.find({ role: "admin" });
+
+		// Create notifications for admins
+		const adminNotifications = admins.map((admin) => ({
+			user: admin._id, // Notification for each admin
+			title: "New Leave Request",
+			message: `${user.name} has requested leave [${
+				newLeaveRequest.leaveType
+			}, ${newLeaveRequest.duration}] from ${new Date(
+				newLeaveRequest.startDate
+			).toLocaleDateString("en-GB")} to ${new Date(
+				newLeaveRequest.endDate
+			).toLocaleDateString("en-GB")} for reason: ${newLeaveRequest.reason} : ${
+				newLeaveRequest.status
+			}`,
+
+			meta: { leaveRequestId: savedLeaveRequest._id },
+		}));
+
+		// Insert notifications into the database
+		await Notification.insertMany(adminNotifications);
+
+		// Fetch the updated list of notifications for each admin
+		const updatedNotifications = await Notification.find({
+			user: { $in: admins.map((admin) => admin._id) },
+		}).sort({ createdAt: -1 }); // Most recent notifications first
+
+		// Emit real-time notification to all connected admins
+		admins.forEach((admin) => {
+			req.io.emit("adminNotification", {
+				title: "New Leave Request",
+				message: `${user.name} has requested leave [${
+					newLeaveRequest.leaveType
+				}, ${newLeaveRequest.duration}] from ${new Date(
+					newLeaveRequest.startDate
+				).toLocaleDateString("en-GB")} to ${new Date(
+					newLeaveRequest.endDate
+				).toLocaleDateString("en-GB")} for reason: ${
+					newLeaveRequest.reason
+				} : ${newLeaveRequest.status}`,
+
+				user: admin._id,
+				notifications: updatedNotifications,
 			});
-		}
+		});
 
 		res.status(201).json({
-			message: "Leave request submitted successfully.",
-			leaveRequest: newLeaveRequest,
+			message: "Leave request submitted successfully and admins notified.",
+			leaveRequest: savedLeaveRequest,
 		});
 	} catch (error) {
 		console.error("Error requesting leave:", error);
@@ -71,7 +112,6 @@ const requestLeave = async (req, res) => {
 	}
 };
 
-// Admin Accept Leave Functionality
 const acceptLeave = async (req, res) => {
 	try {
 		const token = req.headers.authorization?.split(" ")[1];
@@ -93,9 +133,7 @@ const acceptLeave = async (req, res) => {
 
 		const { leaveId } = req.params;
 
-		const leaveRequest = await Leave.findById(leaveId)
-			.populate("user", "name")
-			.exec();
+		const leaveRequest = await Leave.findById(leaveId);
 		if (!leaveRequest) {
 			return res.status(404).json({ message: "Leave request not found." });
 		}
@@ -120,10 +158,8 @@ const acceptLeave = async (req, res) => {
 			Math.ceil((endDate - startDate) / (1000 * 3600 * 24)) + leaveDuration;
 
 		const leaveType = leaveRequest.leaveType;
-		console.log("Leave type:", leaveType);
 		const leavePointsRequired = daysOfLeave;
 
-		console.log("Leave points required:", leavePointsRequired);
 		// Ensure the leaveType exists in user's leaveBalance
 		if (user.leaveBalance[leaveType] === undefined) {
 			return res.status(400).json({
@@ -149,13 +185,66 @@ const acceptLeave = async (req, res) => {
 
 		await leaveRequest.save();
 
-		req.io.emit("leaveRequestNotification", {
-			message: `Leave approved ${user.name} (${user.email})`,
-			leaveRequest: leaveRequest,
+		// Notify the user
+		const userNotification = new Notification({
+			user: user._id,
+			title: "Leave Request Approved",
+			message: `Your leave request for ${leaveType} (${
+				leaveRequest.duration
+			}) from ${new Date(leaveRequest.startDate).toLocaleDateString(
+				"en-GB"
+			)} to ${new Date(leaveRequest.endDate).toLocaleDateString(
+				"en-GB"
+			)} has been approved by ${adminUser.name}.`,
+			type: "success",
+			meta: { leaveRequestId: leaveRequest._id },
+		});
+
+		await userNotification.save();
+
+		// Emit real-time notification to the user
+		req.io.to(user._id.toString()).emit("userNotification", {
+			message: `Your leave request has been approved by ${adminUser.name}.`,
+			leaveRequest,
+		});
+
+		// Notify all admins about the approval
+		const admins = await User.find({ role: "admin" });
+
+		const adminNotifications = admins.map((admin) => ({
+			user: admin._id, // Notification for each admin
+			title: "Leave Request Approved",
+			message: `Your leave request for ${leaveType} (${
+				leaveRequest.duration
+			}) from ${new Date(leaveRequest.startDate).toLocaleDateString(
+				"en-GB"
+			)} to ${new Date(leaveRequest.endDate).toLocaleDateString(
+				"en-GB"
+			)} has been approved by ${adminUser.name}.`,
+			type: "info",
+			meta: { leaveRequestId: leaveRequest._id },
+		}));
+
+		await Notification.insertMany(adminNotifications);
+
+		// Emit real-time notification to all admins
+		admins.forEach((admin) => {
+			req.io.emit("userNotification", {
+				message: `Your leave request for ${leaveType} (${
+					leaveRequest.duration
+				}) from ${new Date(leaveRequest.startDate).toLocaleDateString(
+					"en-GB"
+				)} to ${new Date(leaveRequest.endDate).toLocaleDateString(
+					"en-GB"
+				)} has been approved by ${adminUser.name}.`,
+				leaveRequest,
+				user: admin._id,
+			});
 		});
 
 		res.status(200).json({
-			message: "Leave request approved",
+			message:
+				"Leave request approved, leave balance updated, user and admins notified.",
 			leaveRequest,
 		});
 	} catch (error) {
@@ -186,9 +275,7 @@ const rejectLeave = async (req, res) => {
 
 		const { leaveId } = req.params;
 
-		// Find the leave request
 		const leaveRequest = await Leave.findById(leaveId);
-
 		if (!leaveRequest) {
 			return res.status(404).json({ message: "Leave request not found." });
 		}
@@ -199,15 +286,69 @@ const rejectLeave = async (req, res) => {
 				.json({ message: "Leave request is not in pending status." });
 		}
 
-		// Update the leave request status to rejected
+		const user = await User.findById(leaveRequest.user);
+		if (!user) {
+			return res.status(404).json({ message: "User not found." });
+		}
+
+		const leaveType = leaveRequest.leaveType;
+
+		// Update the leave request status
 		leaveRequest.status = "rejected";
 		leaveRequest.approvedBy = adminUserId;
 		leaveRequest.approvedAt = new Date();
-
 		await leaveRequest.save();
 
+		// Create a notification for the user
+		const userNotification = new Notification({
+			user: user._id,
+			title: "Leave Request Rejected",
+			message: `Your leave request for [ ${leaveType} ] from ${new Date(
+				leaveRequest.startDate
+			).toLocaleDateString("en-GB")} to ${new Date(
+				leaveRequest.endDate
+			).toLocaleDateString("en-GB")} has been rejected by ${adminUser.name}.`,
+			type: "error",
+			meta: { leaveRequestId: leaveRequest._id },
+		});
+		await userNotification.save();
+
+		// Emit a real-time notification to the user
+		req.io.to(user._id.toString()).emit("userNotification", {
+			message: `Your leave request for ${leaveType} has been rejected by ${adminUser.name}.`,
+			leaveRequest,
+		});
+
+		// Notify all admins about the rejection
+		const admins = await User.find({ role: "admin" });
+		const adminNotifications = admins.map((admin) => ({
+			user: admin._id,
+			title: "Leave Request Rejected",
+			message: `${
+				user.name
+			}'s leave request for [ ${leaveType} ] from ${new Date(
+				leaveRequest.startDate
+			).toLocaleDateString("en-GB")} to ${new Date(
+				leaveRequest.endDate
+			).toLocaleDateString("en-GB")} has been rejected by ${adminUser.name}.`,
+			type: "info",
+			meta: { leaveRequestId: leaveRequest._id },
+		}));
+
+		await Notification.insertMany(adminNotifications);
+
+		// Emit real-time notification to all admins
+		admins.forEach((admin) => {
+			req.io.emit("userNotification", {
+				message: `${user.name}'s leave request for ${leaveType} has been rejected by ${adminUser.name}.`,
+				leaveRequest,
+				user: admin._id,
+			});
+		});
+
+		// Send success response
 		res.status(200).json({
-			message: "Leave request rejected successfully.",
+			message: "Leave request rejected successfully. User and admins notified.",
 			leaveRequest,
 		});
 	} catch (error) {
@@ -215,6 +356,7 @@ const rejectLeave = async (req, res) => {
 		res.status(500).json({ message: "Internal server error." });
 	}
 };
+
 // Admin Get All Leave Requests
 const getAllLeaveRequests = async (req, res) => {
 	try {
@@ -246,7 +388,7 @@ const getAllLeaveRequests = async (req, res) => {
 		} = req.query;
 		const filter = {};
 
-		// Apply status filter if provided
+		// Apply `status` filter if provided
 		if (status && ["pending", "approved", "rejected"].includes(status)) {
 			filter.status = status;
 		}
