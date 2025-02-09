@@ -207,6 +207,51 @@ const updateUser = async (req, res) => {
   }
 };
 
+const getUserById = async (req, res) => {
+  try {
+    // Extract and verify the token
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) {
+      return res
+        .status(403)
+        .json({ message: "Access denied. No token provided." });
+    }
+
+    const decodedToken = jwt.verify(token, process.env.JWT_SECRET);
+    const requestingUser = await User.findById(decodedToken.id);
+
+    if (!requestingUser || requestingUser.role !== "admin") {
+      return res.status(403).json({ message: "Access denied." });
+    }
+
+    // Extract userId from request parameters
+    const { userId } = req.params;
+
+    // Find the user by ID
+    const user = await User.findById(userId)
+      .populate("job", "name")
+      .populate("department", "name")
+      .populate("position", "title");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    // Ensure the admin can only access users within their company
+    if (user.company.toString() !== requestingUser.company.toString()) {
+      return res
+        .status(403)
+        .json({ message: "You can only view users from your company." });
+    }
+
+    // Respond with user details
+    res.status(200).json({ message: "User retrieved successfully.", user });
+  } catch (error) {
+    console.error("Error fetching user by ID:", error);
+    res.status(500).json({ message: "Internal server error." });
+  }
+};
+
 const deleteUser = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(" ")[1];
@@ -300,4 +345,5 @@ module.exports = {
   updateUser,
   deleteUser,
   getAllUsers,
+  getUserById,
 };

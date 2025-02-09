@@ -190,10 +190,6 @@ const getAllAttendanceRecords = async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    // Log user details for debugging
-    console.log("Decoded User ID:", userId);
-    console.log("User Role:", user.role);
-
     // Base filter: Admin sees all, others see their own records
     const filter = user.role === "admin" ? {} : { user: userId };
 
@@ -244,8 +240,104 @@ const getAllAttendanceRecords = async (req, res) => {
   }
 };
 
+const getOwnAttendanceRecords = async (req, res) => {
+  try {
+    // Extract the token from the request header
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) {
+      return res
+        .status(403)
+        .json({ message: "Access denied. No token provided." });
+    }
+
+    // Decode the token to get the user's ID
+    const decodedToken = jwt.verify(token, process.env.JWT_SECRET);
+    const userId = decodedToken.id;
+
+    // Fetch attendance records for the logged-in user
+    const attendanceRecords = await Attendance.find({ user: userId })
+      .populate("user", "name email department job")
+      .sort({ clockIn: -1 }); // Sort by most recent first
+
+    // Check if no records are found
+    if (attendanceRecords.length === 0) {
+      return res.status(404).json({ message: "No attendance records found." });
+    }
+
+    // Respond with the attendance records
+    res.status(200).json({
+      message: "Attendance records fetched successfully.",
+      data: attendanceRecords,
+    });
+  } catch (error) {
+    console.error("Error fetching attendance records:", error);
+    res.status(500).json({
+      message: "Internal server error.",
+      error: error.message,
+    });
+  }
+};
+
+const getAttendanceRecordById = async (req, res) => {
+  try {
+    // Verify token
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) {
+      return res
+        .status(403)
+        .json({ message: "Access denied. No token provided." });
+    }
+
+    // Decode token and find the user
+    const decodedToken = jwt.verify(token, process.env.JWT_SECRET);
+    const userId = decodedToken.id;
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    // Extract attendance record ID from request params
+    const { id } = req.params;
+    console.log("Requested Attendance ID:", id); // Check the requested ID
+
+    // Fetch attendance record
+    const attendanceRecord = await Attendance.find({ user: id })
+      .populate("user", "name email department job")
+      .sort({ clockIn: -1 }); // Sort by the most recent first
+
+    console.log("Attendance Record:", attendanceRecord);
+
+    if (!attendanceRecord) {
+      return res.status(404).json({ message: "Attendance record not found." });
+    }
+
+    // Check if the user has access to the attendance record
+    if (
+      user.role !== "admin" &&
+      attendanceRecord.user._id.toString() !== userId
+    ) {
+      return res
+        .status(403)
+        .json({ message: "Access denied. You cannot view this record." });
+    }
+
+    // Send the attendance record
+    res.status(200).json({
+      message: "Attendance record fetched successfully.",
+      data: attendanceRecord,
+    });
+  } catch (error) {
+    console.error("Error fetching attendance record:", error);
+    res.status(500).json({
+      message: "Internal server error.",
+      error: error.message,
+    });
+  }
+};
 module.exports = {
   clockIn,
   clockOut,
   getAllAttendanceRecords,
+  getOwnAttendanceRecords,
+  getAttendanceRecordById,
 };

@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Real-Time Notifications</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        padding: 20px;
+        background: #f4f4f9;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      h1 {
+        margin: 0;
+        font-size: 24px;
+      }
+      #notificationCount {
+        background: #ff6347;
+        color: white;
+        border-radius: 50%;
+        padding: 5px 10px;
+        font-size: 14px;
+        margin-left: 10px;
+      }
+      #notifications {
+        margin-top: 20px;
+      }
+      .notification {
+        padding: 10px;
+        margin-bottom: 10px;
+        background: #eaf8ff;
+        border: 1px solid #00aaff;
+        border-radius: 5px;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+      }
+      .notification .message {
+        flex: 1;
+        font-weight: bold;
+      }
+      .notification .details {
+        font-size: 14px;
+        color: #333;
+        margin-top: 5px;
+      }
+      .notification .timestamp {
+        font-size: 12px;
+        color: #666;
+        margin-left: 10px;
+        margin-top: 5px;
+      }
+      .newNotificationAlert {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background-color: #ff6347;
+        color: white;
+        padding: 10px 20px;
+        border-radius: 5px;
+        display: none;
+        font-size: 14px;
+        z-index: 1000;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Real-Time Notifications (Admin)</h1>
+      <span id="notificationCount">0</span>
+    </header>
+    <div id="notifications"></div>
+    <div id="newNotificationAlert" class="newNotificationAlert">
+      New Notification!
+    </div>
+
+    <script>
+      // Static admin token
+      const token =
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY3ODlmZjE1ZjhjZGIwNGQ3NjI4NmI1YSIsImlhdCI6MTczNzM4NjM5MiwiZXhwIjoxNzM3Mzg5OTkyfQ.sbXPgLVcBMn5YlMlvQb3AYl3hiOHOWc7rYDb8SvSX4k";
+
+      // Connect to the server with the token
+      const socket = io("http://localhost:3000", {
+        auth: {
+          token, // Send token in the authentication header
+        },
+      });
+
+      // Track the number of notifications
+      let notificationCount = 0;
+
+      // Update the notification count display
+      function updateNotificationCount() {
+        const countElement = document.getElementById("notificationCount");
+        countElement.textContent = notificationCount;
+      }
+
+      // Handle connection success
+      socket.on("connect", () => {
+        console.log("Connected to server as admin.");
+      });
+
+      // Handle connection errors
+      socket.on("connect_error", (err) => {
+        console.error("Connection failed:", err.message);
+        alert("Access denied: Admin privileges are required.");
+      });
+
+      // Listen for notifications in real-time
+      socket.on("adminNotification", (data) => {
+        console.log("Notification received:", data);
+        displayNotification(data.message, data.leaveRequest, data.timestamp);
+        showNewNotificationAlert(); // Show the new notification alert
+      });
+
+      // Fetch notifications from the server on page load
+      async function fetchNotifications() {
+        try {
+          const response = await fetch(
+            "http://localhost:3000/api/notifications/get-notification",
+            {
+              method: "GET",
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            }
+          );
+
+          const data = await response.json();
+
+          console.log("Notification data:", data);
+
+          // Check if notifications exist in the response
+          if (response.ok && Array.isArray(data.data)) {
+            // Display fetched notifications
+            data.data.forEach((notification) => {
+              displayNotification(
+                notification.message,
+                notification.title,
+                notification.createAt
+              );
+            });
+          } else {
+            console.error(
+              "No notifications found or incorrect response format:",
+              data.message
+            );
+            alert(
+              "No notifications found or there was an issue fetching them."
+            );
+          }
+        } catch (error) {
+          console.error("Error fetching notifications:", error);
+          alert("Error fetching notifications: " + error.message); // Notify the user
+        }
+      }
+
+      // Display a notification on the page
+      function displayNotification(message, leaveRequest, timestamp) {
+        const notificationsDiv = document.getElementById("notifications");
+
+        // Create a new notification element
+        const notification = document.createElement("div");
+        notification.className = "notification";
+
+        // Message part
+        const messageDiv = document.createElement("div");
+        messageDiv.className = "message";
+        messageDiv.textContent = message;
+
+        // Leave request details part
+
+        // Timestamp part
+        const timestampDiv = document.createElement("div");
+        timestampDiv.className = "timestamp";
+        timestampDiv.textContent = new Date(timestamp).toLocaleString();
+
+        // Append message, details, and timestamp to notification
+        notification.appendChild(messageDiv);
+
+        notification.appendChild(timestampDiv);
+
+        // Prepend the notification to the list
+        notificationsDiv.prepend(notification);
+
+        // Increment notification count
+        notificationCount++;
+        updateNotificationCount();
+      }
+
+      // Show a new notification alert
+      function showNewNotificationAlert() {
+        const alertElement = document.getElementById("newNotificationAlert");
+        alertElement.style.display = "block"; // Show the alert
+
+        // Hide the alert after 3 seconds
+        setTimeout(() => {
+          alertElement.style.display = "none";
+        }, 3000);
+      }
+
+      // Fetch notifications when the page loads
+      fetchNotifications();
+    </script>
+  </body>
+</html>
